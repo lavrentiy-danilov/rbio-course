@@ -1,0 +1,212 @@
+---
+title: "Untitled"
+author: "Lavrentiy"
+date: "April 8, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(DESeq2)
+library(ggplot2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(pheatmap)
+options(width=120)
+library(DESeq2)
+library(ggplot2)
+library(pheatmap)
+library(amap)
+library(dbscan)
+```
+
+```{r}
+counts <- read.table("GSE89633_counts.tsv", head = T, sep = '\t', row.names = 1 )
+conditions <- read.table("GSE89633_conditions.tsv", head = T,sep = '\t', row.names = 1)
+
+```
+
+
+```{r deseq_prep, cache=TRUE, message = FALSE, warning=FALSE, echo=FALSE}
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = conditions,
+                              design = ~ conditions+cells)
+dds <- dds[rowSums(counts(dds)) > 20, ]
+dds <- DESeq(dds)
+vst_dds <- vst(dds)
+counts.norm <- assay(vst_dds)
+
+```
+
+
+```{r PCA}
+pca_data <- prcomp(t(counts.norm))
+percents <- pca_data$sdev^2 / sum(pca_data$sdev^2)
+to_plot <- t(counts.norm) %*% pca_data$rotation
+
+gdata <- data.frame(
+  x=to_plot[, 1],
+  y=to_plot[, 2],
+  tissue=conditions[, 1],
+  cells=conditions[, 2],
+  name=rownames(conditions)
+)
+
+ggplot(data=gdata, aes(x=x, y=y, color=cells, shape=tissue, text=name)) +
+  geom_point(size=3) + theme_bw()  +
+  xlab(paste0("PC", 1, ": ", formatC(100 * percents[1], digits=4), "%")) +
+  ylab(paste0("PC", 2, ": ", formatC(100 * percents[2], digits=4), "%"))
+
+plotPCA(vst_dds, intgroup=c("conditions", "cells")) + theme_bw()
+
+```
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = conditions,
+                              design = ~ conditions+cells)
+sort_genes<-sort(rowSums(counts(dds)),decreasing = T)[1:8000]
+dds <- dds[names(sort_genes), ]
+log_dds<-rlog(dds)
+rld<-assay(log_dds)
+
+clustering <- Kmeans(rld, 10, method="correlation", iter.max=200)
+head(clustering$cluster)
+```
+
+
+Теоретически можно, но вот сказать 100% сложновато, 
+В целом на графике написанна компонента, которая обясняет большую часть данных
+
+```{r}
+sort<-sort(clustering$cluster)
+
+sort_colum<-order(conditions$cells,conditions$conditions)
+to_visualise <- rld[names(sort), sort_colum]
+to_visualise <- t(apply(to_visualise, 1, function(r) {
+  (r - min(r)) / (max(r) - min(r))
+}))
+mat<-as.data.frame(sort)
+mat$sort<-factor(mat$sort)
+pheatmap(to_visualise, 
+         show_rownames =F, cluster_rows = F,
+         cluster_cols=F,
+         annotation_col = conditions,annotation_row = mat)
+```
+
+
+Dif expression
+
+
+```{r}
+conditions_FB <- conditions[conditions$cells == "cell type: FB", ]
+name_FB <- rownames(conditions_FB)
+counts_FB <- counts[ ,name_FB]
+                    
+conditions_FAP <- conditions[conditions$cells == "cell type: FAP", ]
+name_FAP <- rownames(conditions_FAP)
+counts_FAP <- counts[ ,name_FAP]
+
+conditions_SMP <- conditions[conditions$cells == "cell type: SMP", ]
+name_SMP <- rownames(conditions_SMP)
+counts_SMP <- counts[,name_SMP]
+
+dds_FB <- DESeqDataSetFromMatrix(countData = counts_FB,
+                              colData = conditions_FB,
+                              design = ~ conditions)
+dds_FB <- dds_FB[rowSums(counts(dds_FB)) > 20, ]
+dds_FB <- DESeq(dds_FB)
+res_FB <- results(dds_FB)
+mcols(res_FB)$description
+res_FB <- res_FB[order(res_FB[, 4]), ]
+
+gdata_FB <- data.frame(
+  x=res_FB$log2FoldChange,
+  y=-log10(res_FB$padj),
+  grid=1,
+  significant = factor(sapply(-log10(res_FB$padj), function(y) ifelse(y > 2, "significant","Not significant")))
+)
+rownames(gdata_FB)<-rownames(res_FB)
+
+
+
+dds_FAP <- DESeqDataSetFromMatrix(countData = counts_FAP,
+                              colData = conditions_FAP,
+                              design = ~ conditions)
+dds_FAP <- dds_FAP[rowSums(counts(dds_FAP)) > 20, ]
+dds_FAP <- DESeq(dds_FAP)
+res_FAP <- results(dds_FAP)
+mcols(res_FAP)$description
+res_FAP <- res_FAP[order(res_FAP[, 4]), ]
+
+gdata_FAP <- data.frame(
+  x=res_FAP$log2FoldChange,
+  y=-log10(res_FAP$padj),
+  grid=2,
+  significant = factor(sapply(-log10(res_FAP$padj), function(y) ifelse(y > 2, "significant","Not significant")))
+)
+rownames(gdata_FAP)<-rownames(res_FAP)
+
+dds_SMP <- DESeqDataSetFromMatrix(countData = counts_SMP,
+                              colData = conditions_SMP,
+                              design = ~ conditions)
+dds_SMP <- dds_SMP[rowSums(counts(dds_SMP)) > 20, ]
+dds_SMP <- DESeq(dds_SMP)
+res_SMP <- results(dds_SMP)
+mcols(res_SMP)$description
+res_SMP <- res_SMP[order(res_SMP[, 4]), ]
+
+gdata_SMP <- data.frame(
+  x=res_SMP$log2FoldChange,
+  y=-log10(res_SMP$padj),
+  grid=3,
+  significant = factor(sapply(-log10(res_SMP$padj), function(y) ifelse(y > 2, "significant","Not significant")))
+)
+rownames(gdata_SMP)<-rownames(res_SMP)
+
+
+gdata_all<-rbind(gdata_FAP,gdata_FB, gdata_SMP)
+without_NA_gdata <- na.omit(gdata_all)
+
+ggplot(data=without_NA_gdata, aes(x=x, y=y, color = significant)) +
+  geom_point(size=1) + theme_bw() + geom_hline(yintercept = 2, colour="#BB0000", linetype="dashed") + 
+  xlab("Log fold change") +
+  ylab("Adjusted p.value") + 
+scale_colour_manual(values = c("black", "red"))+ facet_grid(.~grid)
+
+```
+
+
+```{r Venn, warning=FALSE, echo=FALSE, message=FALSE}
+res_FB <- results(dds_FB)
+res_FAP<- results(dds_FAP)
+res_SMP <-results(dds_SMP)
+
+padj_FB<-res_FB[complete.cases(res_FB[,6]),]
+sum(is.na(padj_FB$padj))
+
+a<-padj_FB[padj_FB$padj<0.01,]
+
+padj_FAP<-res_FAP[complete.cases(res_FAP[,6]),]
+sum(is.na(padj_FB$padj))
+
+b<-padj_FAP[padj_FAP$padj<0.01,]
+
+padj_SMP<-res_SMP[complete.cases(res_SMP[,6]),]
+sum(is.na(padj_FB$padj))
+
+c<-padj_SMP[padj_SMP$padj<0.01,]
+
+library(VennDiagram)
+
+setA <- row.names(a)
+setB <- row.names(b)
+setC <- row.names(c)
+commonLetters <- intersect(setA, setB)
+commonLetters_2 <- intersect(setB, setC)
+commonLetters_3 <- intersect(setA, setC)
+commonLetters_1 <- intersect(commonLetters, setC)
+
+draw.triple.venn(length(setA), length(setB), length(setC),length(commonLetters),length(commonLetters_2),length(commonLetters_3),length(commonLetters_1),
+                   category = c("FB", "FAP", "SMP"),  fill = c("light blue", "pink", "black"))
+```
+
+Теоретически мы можем сказать, посмотрев на все это да и практически тоже
