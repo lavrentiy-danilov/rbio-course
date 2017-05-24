@@ -1,0 +1,234 @@
+---
+title: "Untitled"
+author: "Lavrentiy"
+date: '22 мая 2017 г '
+output: html_document
+---
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+library(randomForest)
+library(dplyr)
+library(ggplot2)
+
+set.seed(42)
+```
+
+
+
+###Данные 
+Данные - из статьи “A novel strategy for forensic age prediction by DNA methylation and support vector regression model”, Cheng Xu et al, Scientific reports 2015. Авторы попытались построить предсказатель возраста человека по данным метилирования отдельных CpG sites.
+
+ages.tsv -- идентификаторы доноров: возраст, и название array, которым это всё добро сделали.
+
+methylation.tsv -- данные про CpG сайты: где эти сайты на геноме находятся, доля метилирования каждого сайта у наших доноров. Однако в этой табличке также есть NA-значения, авторы статьи утверждают, что это означает “no methylation detected”, и считают их за 0
+
+```{r echo=FALSE, warning=FALSE, cashe = T}
+ages <- read.table("ages.tsv", sep="\t", header=1)
+methylation <- read.table("methylation.tsv", sep="\t", header=1, row.names = 1, na.strings = "NA")
+methylation[is.na(methylation)] <- 0
+```
+
+
+###Предподготовка данных 
+Тут магия, на самом деле получается, что авторы статья сделали ручками feature selection, ну мы посмотрим только на те сайты метилирования, которые лучше всего скорелированны с возрастом. Нам вообще нужно сделать нормальную тестовую и валидирующую выборку — этим мы и займемся. Взяв 10 cайтов и откортировав их по модулю.
+
+
+
+```{r echo=FALSE, warning=FALSE, cashe = T}
+methylation_s <- t(methylation[, 4:ncol(methylation)])
+correlation_age_methylation <- apply(methylation_s, 2, function(x) cor(as.numeric(x), ages$Age))
+top_ten <- correlation_age_methylation[order(abs(correlation_age_methylation), decreasing = TRUE)][1:10]
+methylation_s <- methylation_s[,names(top_ten)]
+
+final <- as.data.frame(cbind(age=ages$Age, methylation_s))
+rownames(final) <- ages$Sample
+
+
+training <- sample(1:50, 40)
+validation <- (1:50)[-training]
+
+train <- final[training, -1]
+valid <- final[validation, -1]
+
+train.response <- final[training, 1]
+valid.response <- final[validation, 1]
+```
+
+
+###Рабочая функция
+Для анализа нам нужна будет функция-обертка, которая все сделает за нас: она принимает на вход data и response, в цикле по runs.number проводит кросс-валидацию для разных разбиений на тренировочную и тестовую выборки в соотношении 80/20, возвращает среднее по всем прогонам для тренировочной и тестовой выборок.
+
+
+```{r echo=FALSE, warning=FALSE, cashe = T}
+
+mean_error <- function(fit, data, response) {
+  err <- lapply(fit, function(x) sqrt( sum((predict(x, data) - response) ** 2) / length(response)))
+  return(mean(sapply(err, function(x) x)))
+}
+
+wrapper <- function(train.data, train.response,
+                    test.data, test.response, 
+                    runs.number=50, ...) {
+  runs <- seq(1, runs.number) 
+  fit.rf <- lapply(runs, function(x) randomForest(train.response ~ .,   data=train.data, ...))
+  train.err <- mean_error(fit.rf, train.data, train.response) 
+
+  test.err <- mean_error(fit.rf, test.data, test.response) 
+  return(c(train.err, test.err))
+}
+
+p <- wrapper(train, train.response, valid, valid.response)
+```
+###Оптимизация обучения
+
+Параметры случайного леса Мы будем оптимизировать наш случайный лес по нескольким параметрам (эти параметры, являются аргументами функции randomForest). Напомню для сводки, что пускай NN – количество объектов в тренировочном датасете, MM – количество features в нашем датасете.
+
+    ntree – количество деревьев в случайном лесе, по умолчанию 500
+
+    replace – когда делается bagging (bootstrapping) нашего случайного леса, должны мы это делать с возвращением, или нет? По умолчанию, мы делает bagging с возвращением.
+
+    sampsize – когда делается bagging (bootstrapping) нашего случайного леса, сколько мы должны взять объектов из тренировочного датасета? По умолчанию, если replace==TRUE мы берем все NN объектов, а если FALSE, то 23N23N
+
+    nodesize – минимальный размер (по количеству объектов) для листовых вершин, значение по умолчанию – 5
+
+    mtry – количество признаков, которое случайно выбирается при каждом разбиении (это также называется feature bagging)
+
+Таким образом, если бы мы хотели, чтобы в нашем лесу, все деревья были переобучены, мы бы запустили это как-нибудь в духе:
+
+
+###Займемся оптимизацией количества деревьев
+
+```{r echo=FALSE, warning=FALSE, cashe = TRUE}
+tree_num <- seq(1, 1000, 5)
+ntrees <- sapply(tree_num, function(x) wrapper(train, train.response, valid, valid.response, runs.number = 100, ntree=x))
+
+toPlot <- rbind(
+    data.frame(trees=tree_num, SSE=ntrees[1,], dataset="Train"),
+    data.frame(trees=tree_num, SSE=ntrees[2,], dataset="Validation")
+  )
+  
+ggplot(data=toPlot, aes(x=trees, y=SSE, color=dataset)) +
+    geom_point(size=3) + 
+    geom_line(size=2) + ggtitle("SSE Plot Trees") +
+    theme_bw() + scale_y_continuous(breaks=seq(0, 20, 2))
+
+NTREE <- 400
+```
+Ну тут немного без разницы сколько выбирать, после 250 вообще можно забить на количество, берем поменьше, ибо очень долго ждать
+
+
+
+
+###Посмотрим, какие параметры для replace и sampsize делают наше обучение лучше:
+```{r echo=FALSE, warning=FALSE, cashe = TRUE}
+nsamp = seq(1, 40, 1)
+nsamps_true <- sapply(nsamp, function(x) wrapper(train, train.response, valid, valid.response, runs.number = 100, replace=T, sampsize=x, ntree=NTREE, nodesize=1, mtry=10))
+nsamps_false <- sapply(nsamp, function(x) wrapper(train, train.response, valid, valid.response, runs.number = 100, replace=F, sampsize=x, ntree=NTREE, nodesize=1, mtry=10))
+
+
+toPlot_true <- rbind(
+    data.frame(samples=nsamp, SSE=nsamps_true[1,], dataset="Train"),
+    data.frame(samples=nsamp, SSE=nsamps_true[2,], dataset="Validation")
+     )
+
+toPlot_false <- rbind(
+    data.frame(samples=nsamp, SSE=nsamps_false[1,], dataset="Train"),
+    data.frame(samples=nsamp, SSE=nsamps_false[2,], dataset="Validation")
+     )
+
+ggplot(data=toPlot_true, aes(x=samples, y=SSE, color=dataset)) +
+    geom_point(size=3) + 
+    geom_line(size=2) + ggtitle("SSE Plot Samplesize True") +
+    theme_bw() 
+
+
+ggplot(data=toPlot_false, aes(x=samples, y=SSE, color=dataset)) +
+    geom_point(size=3) + 
+    geom_line(size=2) + ggtitle("SSE Plot Samplesize False") +
+    theme_bw()
+
+REPLACE <- TRUE
+NSAMP <- 40
+```
+
+Сильнее переобучается модель, в которой установлен параметр replace=F. Поэтому установим replace = r REPLACE и sampsize = r NSAMP.
+NODESIZE
+
+###Оптимизируем возможное количество образцов в листьях.
+
+```{r echo=FALSE, warning=FALSE, cashe = TRUE}
+nnode <-  seq(1, 40, 1)
+nnodes <- sapply(nnode, function(x) wrapper(train, train.response, valid, valid.response, runs.number = 100, replace=REPLACE, sampsize=NSAMP, ntree=NTREE, nodesize=x, mtry=10))
+
+toPlot_node <- rbind(
+    data.frame(nodes=nnode, SSE=nnodes[1,], dataset="Train"),
+    data.frame(nodes=nnode, SSE=nnodes[2,], dataset="Validation")
+     )
+
+ggplot(data=toPlot_node, aes(x=nodes, y=SSE, color=dataset)) +
+    geom_point(size=3) +
+    geom_line(size=2) + ggtitle("SSE Plot Nodes") +
+    theme_bw()
+NNODE <- 1
+```
+
+Переобучения здесь вроде нет. Установим nodesize = r NNODE.
+
+
+###MTRY
+
+```{r echo=FALSE, warning=FALSE, cashe = TRUE}
+nmtry <- seq(1, 10, 1)
+nmtries <- sapply(nmtry, function(x) wrapper(train, train.response, valid, valid.response, runs.number = 100, replace=REPLACE, sampsize=NSAMP, ntree=NTREE, nodesize=NNODE, mtry=x))
+
+toPlot_mtry <- rbind(
+    data.frame(mtry=nmtry, SSE=nmtries[1,], dataset="Train"),
+    data.frame(mtry=nmtry, SSE=nmtries[2,], dataset="Validation")
+     )
+
+ggplot(data=toPlot_mtry, aes(x=mtry, y=SSE, color=dataset)) +
+    geom_point(size=3) + 
+    geom_line(size=2) + ggtitle("SSE Plot Mtry") +
+    theme_bw()
+NMTRY <- 2
+```
+Переобучение здесь бросается в глаза с значения mtry=4. Установим mtry=r NMTRY
+
+
+###CROSS VALIDATION
+
+Проведем кросс-валидацию с установленными параметрами и сравним с результатами, полученными с параметрами по умолчанию.
+```{r echo=FALSE, warning=FALSE, cashe = TRUE}
+
+data <- final[,-1]
+response <- final[, 1]
+cross.validation <- matrix(sample(1:50, 50), nrow=5, ncol=10)
+
+cross.results <- apply(cross.validation, 1, function(test.sample){
+
+  train.sample <- (1:50)[-test.sample]
+  train.data <- data[train.sample, ]
+  train.response <- response[train.sample]
+  test.data <- data[test.sample, ]
+  test.response <- response[test.sample]
+
+  return(wrapper(train.data, train.response, test.data, test.response, 100,  replace=REPLACE, sampsize=NSAMP, ntree=NTREE, nodesize=NNODE, mtry=NMTRY))
+})
+
+cross.results.def <- apply(cross.validation, 1, function(test.sample){
+  train.sample <- (1:50)[-test.sample]
+  train.data <- data[train.sample, ]
+  train.response <- response[train.sample]
+  test.data <- data[test.sample, ]
+  test.response <- response[test.sample]
+
+  return(wrapper(train.data, train.response, test.data, test.response, 100))
+})
+print(rowMeans(cross.results))
+print(rowMeans(cross.results) - rowMeans(cross.results.def))
+```
+
+
+Стало чуть получше.
+
+

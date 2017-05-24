@@ -43,6 +43,7 @@ uncor_matrix <- 1-cor_matrix
 ```
 
 И делаем кластеризацию
+
 ```{r cluster,echo=F,warning=F}
 d<-dist(uncor_matrix,method = "euclidean")
 ## Метод ближайшего соседа в R
