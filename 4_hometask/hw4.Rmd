@@ -35,7 +35,7 @@ methylation[is.na(methylation)] <- 0
 
 
 ```{r echo=FALSE, warning=FALSE, cashe = T}
-methylation_s <- t(methylation[, 4:ncol(methylation)])
+methylation_s <- t(methylation[, 4:ncol(methylation)]) #meth_t
 correlation_age_methylation <- apply(methylation_s, 2, function(x) cor(as.numeric(x), ages$Age))
 top_ten <- correlation_age_methylation[order(abs(correlation_age_methylation), decreasing = TRUE)][1:10]
 methylation_s <- methylation_s[,names(top_ten)]
@@ -61,23 +61,23 @@ valid.response <- final[validation, 1]
 
 ```{r echo=FALSE, warning=FALSE, cashe = T}
 
-mean_error <- function(fit, data, response) {
-  err <- lapply(fit, function(x) sqrt( sum((predict(x, data) - response) ** 2) / length(response)))
-  return(mean(sapply(err, function(x) x)))
-}
-
 wrapper <- function(train.data, train.response,
                     test.data, test.response, 
                     runs.number=50, ...) {
-  runs <- seq(1, runs.number) 
-  fit.rf <- lapply(runs, function(x) randomForest(train.response ~ .,   data=train.data, ...))
-  train.err <- mean_error(fit.rf, train.data, train.response) 
+  train_all <- vector(length = runs.number)
+  test_all <- vector(length = runs.number)
 
-  test.err <- mean_error(fit.rf, test.data, test.response) 
-  return(c(train.err, test.err))
+  for (i in (1:runs.number)){
+  fit.rf <- randomForest(train.response ~ .,
+                       data=train.data, ...) 
+  prediction_train <- predict(fit.rf, train.data)
+  train_all[i] <- sqrt(sum((prediction_train - train.response)^2)/40)
+  prediction_valid <- predict(fit.rf, test.data) 
+  test_all[i] <- sqrt(sum((prediction_valid - test.response)^2)/10)
+  }
+return(c(mean(train_all),mean(test_all)))
 }
 
-p <- wrapper(train, train.response, valid, valid.response)
 ```
 ###Оптимизация обучения
 
@@ -87,7 +87,7 @@ p <- wrapper(train, train.response, valid, valid.response)
 
     replace – когда делается bagging (bootstrapping) нашего случайного леса, должны мы это делать с возвращением, или нет? По умолчанию, мы делает bagging с возвращением.
 
-    sampsize – когда делается bagging (bootstrapping) нашего случайного леса, сколько мы должны взять объектов из тренировочного датасета? По умолчанию, если replace==TRUE мы берем все NN объектов, а если FALSE, то 23N23N
+    sampsize – когда делается bagging (bootstrapping) нашего случайного леса, сколько мы должны взять объектов из тренировочного датасета? По умолчанию, если replace==TRUE мы берем все NN объектов, а если FALSE, то 23N
 
     nodesize – минимальный размер (по количеству объектов) для листовых вершин, значение по умолчанию – 5
 
@@ -102,57 +102,67 @@ p <- wrapper(train, train.response, valid, valid.response)
 tree_num <- seq(1, 1000, 5)
 ntrees <- sapply(tree_num, function(x) wrapper(train, train.response, valid, valid.response, runs.number = 100, ntree=x))
 
-toPlot <- rbind(
+plot1 <- rbind(
     data.frame(trees=tree_num, SSE=ntrees[1,], dataset="Train"),
     data.frame(trees=tree_num, SSE=ntrees[2,], dataset="Validation")
   )
   
-ggplot(data=toPlot, aes(x=trees, y=SSE, color=dataset)) +
-    geom_point(size=3) + 
-    geom_line(size=2) + ggtitle("SSE Plot Trees") +
+ggplot(data=plot1, aes(x=trees, y=SSE, color=dataset)) +
+    geom_point(size=2) + 
+    geom_line(size=1) + ggtitle("Optimize ntree") +
     theme_bw() + scale_y_continuous(breaks=seq(0, 20, 2))
 
-NTREE <- 400
+NTREE <-100 
+
 ```
-Ну тут немного без разницы сколько выбирать, после 250 вообще можно забить на количество, берем поменьше, ибо очень долго ждать
+Ну тут немного без разницы сколько выбирать, после 250 вообще можно забить на количество, берем поменьше (100), ибо очень долго ждать
 
 
 
 
 ###Посмотрим, какие параметры для replace и sampsize делают наше обучение лучше:
-```{r echo=FALSE, warning=FALSE, cashe = TRUE}
-nsamp = seq(1, 40, 1)
-nsamps_true <- sapply(nsamp, function(x) wrapper(train, train.response, valid, valid.response, runs.number = 100, replace=T, sampsize=x, ntree=NTREE, nodesize=1, mtry=10))
-nsamps_false <- sapply(nsamp, function(x) wrapper(train, train.response, valid, valid.response, runs.number = 100, replace=F, sampsize=x, ntree=NTREE, nodesize=1, mtry=10))
 
+#replace
 
-toPlot_true <- rbind(
-    data.frame(samples=nsamp, SSE=nsamps_true[1,], dataset="Train"),
-    data.frame(samples=nsamp, SSE=nsamps_true[2,], dataset="Validation")
-     )
-
-toPlot_false <- rbind(
-    data.frame(samples=nsamp, SSE=nsamps_false[1,], dataset="Train"),
-    data.frame(samples=nsamp, SSE=nsamps_false[2,], dataset="Validation")
-     )
-
-ggplot(data=toPlot_true, aes(x=samples, y=SSE, color=dataset)) +
+```{r  echo=FALSE, warning=FALSE, cashe = TRUE}
+ssize <- data.frame(matrix(unlist((lapply(1:40, function(x) c(x, wrapper(train, train.response, valid, valid.response, ntree=100, mtry=10, nodesize=1, sampsize=x, replace=F))))),ncol = 3, byrow=T))
+tr <- ssize[, 1:2]
+colnames(tr) <- c("Sampsize", "RMSE")
+val <- ssize[, c(1,3)]
+colnames(val) <- c("Sampsize", "RMSE")
+tr$dataset <- "Train"
+val$dataset <- "Validation"
+ssize <- rbind(tr, val)
+ggplot(ssize, aes(Sampsize, RMSE, col=dataset))+
     geom_point(size=3) + 
-    geom_line(size=2) + ggtitle("SSE Plot Samplesize True") +
-    theme_bw() 
-
-
-ggplot(data=toPlot_false, aes(x=samples, y=SSE, color=dataset)) +
-    geom_point(size=3) + 
-    geom_line(size=2) + ggtitle("SSE Plot Samplesize False") +
+    geom_line(size=2) + ggtitle("SSE Plot Replace False") +
     theme_bw()
+
+```
+
+#sampsize
+
+```{r echo=FALSE, warning=FALSE, cashe = TRUE}
+ssize <- data.frame(matrix(unlist((lapply(1:40, function(x) c(x, wrapper(train, train.response, valid, valid.response, ntree=100, mtry=10, nodesize=1, sampsize=x, replace=T))))),ncol = 3, byrow=T))
+tr <- ssize[, 1:2]
+colnames(tr) <- c("Sampsize", "RMSE")
+val <- ssize[, c(1,3)]
+colnames(val) <- c("Sampsize", "RMSE")
+tr$dataset <- "Train"
+val$dataset <- "Validation"
+ssize <- rbind(tr, val)
+ggplot(ssize, aes(Sampsize, RMSE, col=dataset))+
+    geom_point(size=3) + 
+    geom_line(size=2) + ggtitle("SSE Plot Replace True") +
+    theme_bw()
+
 
 REPLACE <- TRUE
 NSAMP <- 40
 ```
 
-Сильнее переобучается модель, в которой установлен параметр replace=F. Поэтому установим replace = r REPLACE и sampsize = r NSAMP.
-NODESIZE
+
+Сильнее переобучается модель, в которой установлен параметр replace=F. Поэтому установим replace = T и NSAMP = 40
 
 ###Оптимизируем возможное количество образцов в листьях.
 
@@ -160,12 +170,12 @@ NODESIZE
 nnode <-  seq(1, 40, 1)
 nnodes <- sapply(nnode, function(x) wrapper(train, train.response, valid, valid.response, runs.number = 100, replace=REPLACE, sampsize=NSAMP, ntree=NTREE, nodesize=x, mtry=10))
 
-toPlot_node <- rbind(
+plot_node <- rbind(
     data.frame(nodes=nnode, SSE=nnodes[1,], dataset="Train"),
     data.frame(nodes=nnode, SSE=nnodes[2,], dataset="Validation")
      )
 
-ggplot(data=toPlot_node, aes(x=nodes, y=SSE, color=dataset)) +
+ggplot(data=plot_node, aes(x=nodes, y=SSE, color=dataset)) +
     geom_point(size=3) +
     geom_line(size=2) + ggtitle("SSE Plot Nodes") +
     theme_bw()
@@ -192,43 +202,46 @@ ggplot(data=toPlot_mtry, aes(x=mtry, y=SSE, color=dataset)) +
     theme_bw()
 NMTRY <- 2
 ```
-Переобучение здесь бросается в глаза с значения mtry=4. Установим mtry=r NMTRY
+Переобучение здесь бросается в глаза с значения mtry=2. Установим mtry=r NMTRY
 
 
 ###CROSS VALIDATION
 
 Проведем кросс-валидацию с установленными параметрами и сравним с результатами, полученными с параметрами по умолчанию.
+
+#Параметры по умолчанию
+
 ```{r echo=FALSE, warning=FALSE, cashe = TRUE}
-
-data <- final[,-1]
-response <- final[, 1]
 cross.validation <- matrix(sample(1:50, 50), nrow=5, ncol=10)
-
-cross.results <- apply(cross.validation, 1, function(test.sample){
-
-  train.sample <- (1:50)[-test.sample]
-  train.data <- data[train.sample, ]
-  train.response <- response[train.sample]
-  test.data <- data[test.sample, ]
-  test.response <- response[test.sample]
-
-  return(wrapper(train.data, train.response, test.data, test.response, 100,  replace=REPLACE, sampsize=NSAMP, ntree=NTREE, nodesize=NNODE, mtry=NMTRY))
-})
-
-cross.results.def <- apply(cross.validation, 1, function(test.sample){
-  train.sample <- (1:50)[-test.sample]
-  train.data <- data[train.sample, ]
-  train.response <- response[train.sample]
-  test.data <- data[test.sample, ]
-  test.response <- response[test.sample]
-
+cross.results <- apply(cross.validation, 1, function(validation){
+  train.sample <- (1:50)[-validation]
+  train.data <- final[train.sample, -1]
+  train.response <- final$age[train.sample]
+  test.data <- final[validation, -1]
+  test.response <- final$age[validation]
   return(wrapper(train.data, train.response, test.data, test.response, 100))
 })
-print(rowMeans(cross.results))
-print(rowMeans(cross.results) - rowMeans(cross.results.def))
+
+```
+
+#Оптимизированные параметры
+
+```{r echo=FALSE, warning=FALSE, cashe = TRUE}
+cross.results.optimise <- apply(cross.validation, 1, function(validation){
+  train.sample <- (1:50)[-validation]
+  train.data <- final[train.sample, -1]
+  train.response <- final$age[train.sample]
+  test.data <- final[validation, -1]
+  test.response <- final$age[validation]
+  return(wrapper(train.data, train.response, test.data, test.response, 100, ntree = NTREE, mtry=NMTRY, nodesize=NNODE, replace=REPLACE, sampsize = NSAMP))
+})
 ```
 
 
-Стало чуть получше.
+#Сравнение с данными по умолчанию
+```{r echo=FALSE, warning=FALSE, cashe = TRUE}
 
+print(rowMeans(cross.results) - rowMeans(cross.results.optimise))
+```
 
+Ну немного потанцевав мы получили небольшое улучшение результата.. но можно добиться большего сыграв трюк и попытаться формировать искусственную и  выборку на основании данных.. но вот что отбирать стало непонятно на стадии отбора сайтов.
